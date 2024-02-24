@@ -3,6 +3,7 @@ import tkinter as tk
 from tkinter import filedialog
 from threading import Thread
 from pytube import Playlist, YouTube
+import youtube_dl
 
 class YoutubeDownloaderUI:
     def __init__(self, master):
@@ -20,7 +21,7 @@ class YoutubeDownloaderUI:
         self.main_frame.pack(padx=20, pady=20)
 
         # URL Entry
-        self.url_label = tk.Label(self.main_frame, text="Enter YouTube URL or Playlist URL:")
+        self.url_label = tk.Label(self.main_frame, text="Enter YouTube URL or Playlist URL or Dailymotion URL :")
         self.url_label.grid(row=0, column=0, sticky="w", pady=5)
 
         self.url_entry = tk.Entry(self.main_frame, width=50)
@@ -104,7 +105,7 @@ class YoutubeDownloaderUI:
             self.show_message(f"An error occurred while downloading the audio: {str(e)}")
 
     def download_video(self, video_url, output_path, quality):
-        try:
+       try:
             yt = YouTube(video_url)
             video_stream = yt.streams.filter(res=quality, file_extension='mp4').first()
             if not video_stream:
@@ -112,8 +113,46 @@ class YoutubeDownloaderUI:
             video_stream.download(output_path)
             self.show_message(f"Video downloaded: {yt.title}")
 
-        except Exception as e:
+            # Open the downloaded video automatically
+            video_path = os.path.join(output_path, f"{yt.title}.mp4")
+
+       except Exception as e:
             self.show_message(f"An error occurred while downloading the video: {str(e)}")
+
+
+
+    def download_dailymotion_video(self, video_url, output_path, quality):
+        ydl_opts = {
+            'outtmpl': os.path.join(output_path, '%(title)s.%(ext)s'),
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        }
+        with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([video_url])
+            self.show_message("Video downloaded successfully")
+
+    def download_playlist(self, playlist_url, output_path, quality, batch_size=5):
+        try:
+            playlist = Playlist(playlist_url)
+            num_videos = len(playlist.video_urls)
+
+            for i in range(0, num_videos, batch_size):
+                batch = playlist.video_urls[i:i + batch_size]
+
+                threads = []
+                for video_url in batch:
+                    thread = Thread(target=self.download, args=(video_url, output_path, quality))
+                    threads.append(thread)
+                    thread.start()
+
+                for thread in threads:
+                    thread.join()
+
+                self.show_message(f"Downloaded {min(batch_size, num_videos - i)} videos out of {num_videos}")
+
+            self.show_message("Playlist downloaded successfully!")
+
+        except Exception as e:
+            self.show_message(f"An error occurred while downloading the playlist: {str(e)}")
 
     def start_download(self):
         url = self.url_entry.get()
@@ -127,9 +166,11 @@ class YoutubeDownloaderUI:
 
         self.progress_label.config(text="Downloading...")
 
-        if 'list=' in url:
-            self.show_message("Playlist URLs are not supported for audio-only downloads.")
-            return
+        if 'dailymotion.com' in url:
+            Thread(target=self.download_dailymotion_video, args=(url, output_path, quality)).start()
+
+        elif 'list=' in url:
+            Thread(target=self.download_playlist, args=(url, output_path, quality, 2)).start()
 
         if file_type == "mp3":
             Thread(target=self.download_audio, args=(url, output_path)).start()
