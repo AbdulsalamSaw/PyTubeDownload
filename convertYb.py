@@ -2,18 +2,46 @@ import os
 import tkinter as tk
 from tkinter import filedialog
 from threading import Thread
-from pytube import Playlist, YouTube
-import youtube_dl
+import yt_dlp
+import shutil
 
 class YoutubeDownloaderUI:
     def __init__(self, master):
         self.master = master
-        master.title("YouTube Downloader")
+        master.title("YouTube Downloader (yt-dlp)")
 
         self.file_type_var = tk.StringVar()
         self.file_type_var.set("mp4")  # Default file type
 
+        # Set up ffmpeg path to local directory
+        self.setup_ffmpeg_path()
+        
         self.create_widgets()
+
+    def setup_ffmpeg_path(self):
+        """Add the current directory to PATH so yt-dlp can find local ffmpeg.exe"""
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        # Add script directory to PATH if not already there
+        if script_dir not in os.environ['PATH']:
+            os.environ['PATH'] = script_dir + os.pathsep + os.environ['PATH']
+
+    def check_ffmpeg(self):
+        """Check if ffmpeg is available (local directory or system PATH)"""
+        # Check in script directory first
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        local_ffmpeg = os.path.join(script_dir, 'ffmpeg.exe')
+        
+        if os.path.exists(local_ffmpeg):
+            print(f"Found local ffmpeg at: {local_ffmpeg}")
+            return True
+        
+        # Check system PATH
+        if shutil.which('ffmpeg') is not None:
+            print("Found ffmpeg in system PATH")
+            return True
+        
+        print("ffmpeg not found")
+        return False
 
     def create_widgets(self):
         # Frame to hold all widgets
@@ -37,7 +65,7 @@ class YoutubeDownloaderUI:
 
         self.quality_var = tk.StringVar()
         self.quality_var.set("720p")  # Default quality
-        qualities = ["144p", "240p", "360p", "480p", "720p", "1080p", "Highest"]
+        qualities = ["360p", "480p", "720p", "1080p", "1440p", "Highest"]
         self.quality_menu = tk.OptionMenu(self.main_frame, self.quality_var, *qualities)
         self.quality_menu.grid(row=1, column=1, pady=5)
 
@@ -53,7 +81,7 @@ class YoutubeDownloaderUI:
         self.output_label.grid(row=3, column=0, sticky="w", pady=5)
 
         self.output_path_var = tk.StringVar()
-        self.output_path_var.set(os.path.expanduser("~"))
+        self.output_path_var.set(os.path.join(os.path.expanduser("~"), "Downloads"))
         self.output_entry = tk.Entry(self.main_frame, textvariable=self.output_path_var, width=40)
         self.output_entry.grid(row=3, column=1, pady=5)
 
@@ -75,87 +103,128 @@ class YoutubeDownloaderUI:
 
     def browse_folder(self):
         folder_selected = filedialog.askdirectory()
-        self.output_path_var.set(folder_selected)
+        if folder_selected:
+            self.output_path_var.set(folder_selected)
 
     def paste_url(self):
-        url_from_clipboard = self.master.clipboard_get()
-        self.url_entry.delete(0, tk.END)
-        self.url_entry.insert(0, url_from_clipboard)
+        try:
+            url_from_clipboard = self.master.clipboard_get()
+            self.url_entry.delete(0, tk.END)
+            self.url_entry.insert(0, url_from_clipboard)
+        except:
+            pass
+
+    def progress_hook(self, d):
+        if d['status'] == 'downloading':
+            try:
+                percent = d.get('_percent_str', 'N/A')
+                speed = d.get('_speed_str', 'N/A')
+                self.show_message(f"Downloading... {percent} (Speed: {speed})")
+            except:
+                pass
+        elif d['status'] == 'finished':
+            self.show_message("Processing...")
+
+    def download_video(self, video_url, output_path, quality):
+        try:
+            # Check for ffmpeg
+            has_ffmpeg = self.check_ffmpeg()
+            
+            # Convert quality format (720p -> 720)
+            quality_num = quality.replace('p', '') if quality != 'Highest' else '2160'
+            
+            print(f"FFmpeg available: {has_ffmpeg}")
+            
+            ydl_opts = {
+                'outtmpl': os.path.join(output_path, '%(title)s.%(ext)s'),
+                'progress_hooks': [self.progress_hook],
+                'quiet': False,
+                'no_warnings': False,
+            }
+
+            # Choose format based on ffmpeg availability
+            if has_ffmpeg:
+                # With ffmpeg: can merge video+audio for high quality
+                ydl_opts['format'] = f'bestvideo[height<={quality_num}][ext=mp4]+bestaudio[ext=m4a]/best[height<={quality_num}]/best'
+                ydl_opts['merge_output_format'] = 'mp4'
+                print(f"Using ffmpeg mode - quality up to {quality}")
+            else:
+                # Without ffmpeg: use single file (progressive) - usually max 720p
+                ydl_opts['format'] = 'best[ext=mp4]/best'
+                print("No ffmpeg - using best single file format (max 720p usually)")
+                if int(quality_num) > 720:
+                    self.show_message("Warning: 1080p+ requires ffmpeg. Downloading best available...")
+
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(video_url, download=True)
+                title = info.get('title', 'Video')
+                self.show_message(f"Downloaded: {title}")
+
+        except Exception as e:
+            error_msg = str(e)
+            print(f"Error: {error_msg}")
+            if "ffmpeg" in error_msg.lower():
+                self.show_message("Error: ffmpeg needed for this quality. Install ffmpeg or choose lower quality.")
+            else:
+                self.show_message(f"Error: {error_msg}")
 
     def download_audio(self, video_url, output_path):
         try:
-            yt = YouTube(video_url)
-            audio_stream = yt.streams.filter(only_audio=True).first()
-            if not audio_stream:
-                self.show_message("No audio stream available for the provided video.")
-                return
-
-            audio_stream.download(output_path)
-            audio_filename = audio_stream.default_filename
-            audio_output_path = os.path.join(output_path, audio_filename)
+            has_ffmpeg = self.check_ffmpeg()
             
-            # Convert to MP3
-            mp3_filename = os.path.splitext(audio_filename)[0] + ".mp3"
-            mp3_output_path = os.path.join(output_path, mp3_filename)
-            os.rename(audio_output_path, mp3_output_path)
+            ydl_opts = {
+                'outtmpl': os.path.join(output_path, '%(title)s.%(ext)s'),
+                'progress_hooks': [self.progress_hook],
+                'format': 'bestaudio/best',
+                'quiet': False,
+            }
 
-            self.show_message(f"Audio downloaded: {mp3_filename}")
+            if has_ffmpeg:
+                ydl_opts['postprocessors'] = [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }]
+                print("Downloading and converting to MP3...")
+            else:
+                print("Warning: ffmpeg not found. Downloading as m4a instead of mp3.")
+                self.show_message("Warning: Downloading as m4a (ffmpeg needed for mp3)")
+
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(video_url, download=True)
+                title = info.get('title', 'Audio')
+                self.show_message(f"Downloaded: {title}")
 
         except Exception as e:
-            self.show_message(f"An error occurred while downloading the audio: {str(e)}")
+            self.show_message(f"Error: {str(e)}")
 
-    def download_video(self, video_url, output_path, quality):
-       try:
-            yt = YouTube(video_url)
-            video_stream = yt.streams.filter(res=quality, file_extension='mp4').first()
-            if not video_stream:
-                video_stream = yt.streams.get_highest_resolution()
-            video_stream.download(output_path)
-            self.show_message(f"Video downloaded: {yt.title}")
-
-            # Open the downloaded video automatically
-            video_path = os.path.join(output_path, f"{yt.title}.mp4")
-
-       except Exception as e:
-            self.show_message(f"An error occurred while downloading the video: {str(e)}")
-
-
-
-    def download_dailymotion_video(self, video_url, output_path, quality):
-        ydl_opts = {
-            'outtmpl': os.path.join(output_path, '%(title)s.%(ext)s'),
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        }
-        with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([video_url])
-            self.show_message("Video downloaded successfully")
-
-    def download_playlist(self, playlist_url, output_path, quality, batch_size=5):
+    def download_playlist(self, playlist_url, output_path, quality):
         try:
-            playlist = Playlist(playlist_url)
-            num_videos = len(playlist.video_urls)
+            has_ffmpeg = self.check_ffmpeg()
+            quality_num = quality.replace('p', '') if quality != 'Highest' else '2160'
+            
+            ydl_opts = {
+                'outtmpl': os.path.join(output_path, '%(playlist_index)s - %(title)s.%(ext)s'),
+                'progress_hooks': [self.progress_hook],
+                'quiet': False,
+            }
 
-            for i in range(0, num_videos, batch_size):
-                batch = playlist.video_urls[i:i + batch_size]
+            if has_ffmpeg:
+                ydl_opts['format'] = f'bestvideo[height<={quality_num}][ext=mp4]+bestaudio[ext=m4a]/best'
+                ydl_opts['merge_output_format'] = 'mp4'
+            else:
+                ydl_opts['format'] = 'best[ext=mp4]/best'
 
-                threads = []
-                for video_url in batch:
-                    thread = Thread(target=self.download, args=(video_url, output_path, quality))
-                    threads.append(thread)
-                    thread.start()
-
-                for thread in threads:
-                    thread.join()
-
-                self.show_message(f"Downloaded {min(batch_size, num_videos - i)} videos out of {num_videos}")
-
-            self.show_message("Playlist downloaded successfully!")
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                self.show_message("Downloading playlist...")
+                ydl.download([playlist_url])
+                self.show_message("Playlist downloaded successfully!")
 
         except Exception as e:
-            self.show_message(f"An error occurred while downloading the playlist: {str(e)}")
+            self.show_message(f"Error: {str(e)}")
 
     def start_download(self):
-        url = self.url_entry.get()
+        url = self.url_entry.get().strip()
         output_path = self.output_path_var.get()
         quality = self.quality_var.get()
         file_type = self.file_type_var.get()
@@ -164,21 +233,23 @@ class YoutubeDownloaderUI:
             self.show_message("Please enter a valid URL and output path.")
             return
 
-        self.progress_label.config(text="Downloading...")
+        # Create output directory if doesn't exist
+        if not os.path.exists(output_path):
+            os.makedirs(output_path)
 
-        if 'dailymotion.com' in url:
-            Thread(target=self.download_dailymotion_video, args=(url, output_path, quality)).start()
+        self.show_message("Starting download...")
 
-        elif 'list=' in url:
-            Thread(target=self.download_playlist, args=(url, output_path, quality, 2)).start()
-
-        if file_type == "mp3":
-            Thread(target=self.download_audio, args=(url, output_path)).start()
+        # Determine if playlist or single video
+        if 'list=' in url:
+            Thread(target=self.download_playlist, args=(url, output_path, quality), daemon=True).start()
+        elif file_type == "mp3":
+            Thread(target=self.download_audio, args=(url, output_path), daemon=True).start()
         else:
-            Thread(target=self.download_video, args=(url, output_path, quality)).start()
+            Thread(target=self.download_video, args=(url, output_path, quality), daemon=True).start()
 
     def show_message(self, message):
         self.progress_label.config(text=message)
+        print(message)
 
 if __name__ == "__main__":
     root = tk.Tk()
