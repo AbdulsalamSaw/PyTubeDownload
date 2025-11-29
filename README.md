@@ -5,11 +5,3 @@ Once you're in the program, it's like stepping into your own control room. You'r
 
 What truly sets this program apart is its dedication to a trouble-free journey. The download process unfolds seamlessly, sparing you from headaches and technical intricacies. It's not just a tool; it's a companion that ensures your venture into video downloading is not only efficient but also delightful. From initiation to completion, the experience is as genuine and down-to-earth as it gets, turning the act of video preservation into a truly enjoyable and realistic endeavor.
 
-## Installation
-
-To use this program, you need to install the necessary library. Please run the following command in your terminal:
-
-```bash
-pip install pytube
-
-pip install youtube_dl
